@@ -1,0 +1,198 @@
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(MatchIt)
+library(caret)
+library(e1071)
+library(pROC)
+library(psych)
+
+#Read data file into environment
+df <- read.csv('HighNote Data.csv')
+adopter_sum <- describe(subset(df,adopter==1))
+non_adopter_sum <- describe(subset(df,adopter==0))
+
+adopter_sum
+
+non_adopter_sum
+
+#Comparing Mean age of Adopters vs Non-Adopters
+options(repr.plot.width=5, repr.plot.height=5)
+t_mean_age <- aggregate(age ~ adopter, df, mean)
+barplot(height = t_mean_age$age, main="Comparison of Age", horiz=FALSE,names.arg=c("Non Adopter", "Adopter"),col = "#69b3a2")
+
+#Comparing Gender Composition of Adopters vs Non Adopters
+perc_comp <- as.data.frame(table(df$male, df$adopter))
+names(perc_comp)<- c('male','adopter','Freq')
+group <- perc_comp %>% group_by(male) %>% summarize(group_tot = sum(Freq)) %>% ungroup()
+perc_comp$group_tot <- ifelse(perc_comp$male == group$male, group$group_tot,0)
+perc_comp$gend_share <- round(perc_comp$Freq/perc_comp$group_tot,3)*100
+
+ggplot(perc_comp, aes(fill=adopter, y=gend_share, x=male)) + 
+    geom_bar(position="dodge", stat="identity")
+perc_comp
+#% of Female adopters is 10% which is roughly double than female non adopters. % of Male adopters is slightly lower(~4% points) as compared to non adopters
+
+#Understanding Social Circle of Adopters vs Non Adopters
+t_mean_frnds <- aggregate(friend_cnt ~ adopter, df, mean)
+barplot(height = t_mean_frnds$friend_cnt, main="Comparison of Friends", horiz=TRUE,names.arg=c("Non Adopter", "Adopter"),col="#69b3a2")
+#Adopters have substantially higher number of friends compared to Non Adopters
+
+#Understanding Social Circle of Adopters vs Non Adopters
+t_mean_subfrnds <- aggregate(subscriber_friend_cnt ~ adopter, df, mean)
+barplot(height = t_mean_subfrnds$subscriber_friend_cnt, main="Comparison of Subscriber Friends", horiz=TRUE,names.arg=c("Non Adopter", "Adopter"),col="#69b3a2")
+#Non adopters not surprisingly have the lowest subscriber friends. This could means that peer circle can influence choice of adoption
+
+#Understanding proportion of Male/Female friends
+df_adopt <- subset(df,adopter==1)
+df_nonadopt <- subset(df,adopter==0)
+
+#Proportion of Male friends follows a similar distribution when comparing Adopters & Non Adopters. 
+t_mean_maleprop <- aggregate(avg_friend_male ~ adopter, df, mean)
+t_mean_maleprop
+
+ggplot(data=df, aes(x=df$avg_friend_male, group=adopter, fill=adopter)) +
+    geom_density(adjust=1.5, alpha=.4)
+
+#Adopters have higher density of Male friends as compared to Non Adopters
+
+#Understanding distribution of friends
+t_mean_frnd_country <- aggregate(friend_country_cnt ~ adopter, df, mean)
+barplot(height = t_mean_frnd_country$friend_country_cnt, main="Comparison of Friend Country", horiz=TRUE,names.arg=c("Non Adopter", "Adopter"),col="#69b3a2")
+
+t_mean_songsListened <- aggregate(songsListened ~ adopter, df, mean)
+t_mean_lovedTracks <- aggregate(lovedTracks ~ adopter, df, mean)
+t_mean_posts <- aggregate(posts ~ adopter, df, mean)
+t_mean_playlists <- aggregate(playlists ~ adopter, df, mean)
+t_mean_shouts <- aggregate(shouts ~ adopter, df, mean)
+t_mean_tenure <- aggregate(tenure ~ adopter, df, mean)
+
+p1 <- ggplot(data=t_mean_songsListened, aes(x=adopter, y=songsListened)) +
+  geom_bar(stat="identity", width=0.5,fill="steelblue")
+
+p2 <- ggplot(data=t_mean_lovedTracks, aes(x=adopter, y=lovedTracks)) +
+  geom_bar(stat="identity", width=0.5,fill="green")
+
+p3 <- ggplot(data=t_mean_posts, aes(x=adopter, y=posts)) +
+  geom_bar(stat="identity", width=0.5,fill="yellow")
+
+p4 <-ggplot(data=t_mean_playlists, aes(x=adopter, y=playlists)) +
+  geom_bar(stat="identity", width=0.5,fill="black")
+
+p5 <- ggplot(data=t_mean_shouts, aes(x=adopter, y=shouts)) +
+  geom_bar(stat="identity", width=0.5,fill="pink")
+
+p6 <- ggplot(data=t_mean_tenure, aes(x=adopter, y=tenure)) +
+  geom_bar(stat="identity", width=0.5,fill="#69b3a2")
+
+grid.arrange(p1, p2, p3,p4,p5,p6, ncol = 3,nrow=3)
+#Adopters have a high tendency to be more socially engaged than compared to non adopters.
+#Surprisngly Tenure does not differentiate an adopter from a non adopter
+
+#Current Difference in Means between treatment and control
+df_means <- subset(df,select = -ID)
+df_means$Test <- ifelse(df$subscriber_friend_cnt>0,1,0)
+df_means1 <- df_means %>% group_by(Test) %>% summarise(across(everything(), mean))
+df_means1
+#There is a large deviance in the observed means between the Adopter & Non-Adopter groups. Performing a T-Test shows that these means are significant as well
+
+with(df_means, t.test(age ~ Test))
+with(df_means, t.test(male ~ Test))
+with(df_means, t.test(friend_cnt ~ Test))
+with(df_means, t.test(avg_friend_age ~ Test))
+with(df_means, t.test(avg_friend_male ~ Test))
+with(df_means, t.test(friend_country_cnt ~ Test))
+with(df_means, t.test(songsListened ~ Test))
+
+#Create Test/Control flag on the original df
+df_psm <- df
+df_psm$Test <- ifelse(df$subscriber_friend_cnt>0,1,0)
+#head(df_psm)
+
+#Create a logistic regression equation - this estimates the propensity of a customer belonging to treatment/control
+psm <- glm(Test~.,family = binomial(), data = df_psm)
+summary(psm)
+#There is presence of outliers and hence our model is not able to distinguish between 0's & 1's
+#Rerunning with log transforms
+psm_log <- glm(Test ~log(age) + male +log(friend_cnt+1) + log(avg_friend_age+1)  + log(avg_friend_male+1) +
+                       log(friend_country_cnt+1) + log(songsListened+1) + log(lovedTracks+1) + log(posts+1) +
+                       log(playlists+1) + log(shouts+1) + log(tenure+1) + good_country, family = binomial(), data = df_psm)
+summary(psm_log)
+
+psm_df <- data.frame(pr_score = predict(psm_log, type = "response"),
+                     Test = psm_log$model$Test)
+
+#Plot and verify the region of common support -This indicates there are enough data points to perfrom matched sample analysis
+labs <- paste("Treatment Level:", c("Subscriber Friends > 0", "Subscriber Friends = 0"))
+psm_df %>%
+  mutate(Treatment = ifelse(Test == 1, labs[1], labs[2])) %>%
+  ggplot(aes(x = pr_score)) +
+  geom_histogram(color = "white",bins = 50) +
+  facet_wrap(~Treatment) +
+  xlab("Probability of receiving Treatment") +
+  theme_bw()
+
+#Looks like there are enough data points across all probability levels to perform a matched sample analysis
+
+#To create matched samples, we use the Matchit Function which estimated propensity score in the background and matches 
+#based on a specified algorithm. Here we match samples based on K-Nearest Neighbours
+match <- matchit(Test ~log(age) + male +log(friend_cnt+1) + log(avg_friend_age+1)  + log(avg_friend_male+1) +
+                       log(friend_country_cnt+1) + log(songsListened+1) + log(lovedTracks+1) + log(posts+1) +
+                       log(playlists+1) + log(shouts+1) + log(tenure+1) + good_country,method = "nearest", data = df_psm)
+summary(match)
+match_data <- match.data(match)
+#By looking at the output we see that there is a significnat improvement in the means after matching. 
+
+with(match_data, t.test(age ~ Test))
+with(match_data, t.test(male ~ Test))
+with(match_data, t.test(friend_cnt ~ Test))
+with(match_data, t.test(avg_friend_age ~ Test))
+with(match_data, t.test(avg_friend_male ~ Test))
+with(match_data, t.test(friend_country_cnt ~ Test))
+with(match_data, t.test(songsListened ~ Test))
+
+test <- subset(match_data,Test==1,select = adopter)
+cont <- subset(match_data,Test==0,select = adopter)
+t.test(test,cont)
+#Treatment has a higher mean as compared to control, and based on the T-Test we can conclude that this difference is significant
+
+#First use all variables
+mod_df <- df
+log_all <- lm(adopter~  log(age) + male +log(friend_cnt+1) + log(avg_friend_age+1)  + log(avg_friend_male+1) +
+                       log(friend_country_cnt+1) + log(subscriber_friend_cnt + 1) + log(songsListened+1) + log(lovedTracks+1) + log(posts+1) +log(playlists+1) + log(shouts+1) + log(tenure+1) + good_country, data = mod_df, family = binomial())
+summary(log_all)
+#Rerunning the code with only significnat variables
+log_sig <- lm(adopter~ log(age) + male + log(avg_friend_age+1)  + log(subscriber_friend_cnt + 1) + log(songsListened+1) + log(lovedTracks+1) + log(posts+1) +log(playlists+1) + log(shouts+1) + log(tenure+1) + good_country, data = df, family = binomial())
+summary(log_sig)
+
+#Run ChiSq Test to see the effect of removing variables
+anova(log_all, log_sig, test="Chisq")
+#Since the P-Value is very high, we can essentially conclude that the coefficients removed were indeed zero and the smaller model is more accurate
+
+#Create confusion matrix to validate Model accuracy
+mod_df$predicted <- ifelse(predict(log_sig, mod_df, type="response")>=0.50,1,0)
+#head(mod_df)
+data <- mod_df$predicted
+predicted <- mod_df$adopter
+head(predicted)
+
+confusionMatrix(as.factor(predicted),as.factor(data))
+
+pROC_obj <- roc(mod_df$adopter ~ predict(log_sig, type = "response"),
+            smoothed = TRUE,
+            # arguments for ci
+            ci=TRUE, ci.alpha=0.9, stratified=FALSE,
+            # arguments for plot
+            plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid=TRUE,
+            print.auc=TRUE, show.thres=TRUE)
+
+
+sens.ci <- ci.se(pROC_obj)
+plot(sens.ci, type="shape", col="lightblue")
+## Warning in plot.ci.se(sens.ci, type = "shape", col = "lightblue"): Low
+## definition shape.
+plot(sens.ci, type="bars")
+
+#AUC is 0.791 - indicating that the model has a high TP rate
+
+exp(log_sig$coefficients)
